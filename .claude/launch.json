@@ -1,0 +1,26 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "site-preview",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": [
+        "-m",
+        "http.server",
+        "8765",
+        "-d",
+        "build/site"
+      ],
+      "port": 8765
+    },
+    {
+      "name": "admin-local",
+      "runtimeExecutable": ".venv/bin/python",
+      "runtimeArgs": [
+        "scripts/admin_local.py",
+        "8766"
+      ],
+      "port": 8766
+    }
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "app": "../.venv-infra/bin/python app.py",
+  "context": {
+    "region": "us-east-1",
+    "league_name": "Rebuy Club",
+    "group_email": "rebuyclub@googlegroups.com",
+    "treasurer_email": "corey.lanum@gmail.com",
+    "from_email": "corey.lanum@gmail.com",
+    "recap_provider": "anthropic",
+    "recap_model": "claude-opus-5-5"
+  }
+}

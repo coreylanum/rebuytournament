@@ -1,0 +1,19 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+dist/
+build/
+.venv-infra/
+cdk.out/
+node_modules/
+# Player contact info (emails, Venmo, PayPal) never goes in git
+data/private/
+# Local working data store
+data/store/
+build/
+.venv-infra/
+*.xlsx
+# Contains player emails / payment accounts
+*.pdf
+/poker_now_log_*.csv
