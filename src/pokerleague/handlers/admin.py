@@ -364,8 +364,7 @@ def do_upload(store: Store, req: Request) -> dict:
     if not record.get("unmatched"):
         record = write_recap(store, record)
     cfg = settings()
-    host = req.headers.get("host")
-    admin_url = f"https://{host}/" if host and not host.startswith(("localhost", "127.0.0.1")) else cfg.admin_url
+    admin_url = public_base_url(req)
     send_email(store, cfg.treasurer_email, f"Poker results for {date} are ready to review",
                f"Logs for {date} were uploaded ({len(record.get('log_files', []))} table logs).\n\n"
                f"Review payouts and approve: {admin_url}admin/t/{date}\n")
@@ -419,6 +418,16 @@ def save_player(store: Store, req: Request, player_id: str) -> dict:
 
 
 # ---------- router ----------
+
+def public_base_url(req: Request) -> str:
+    """Base URL people should click: the configured domain, else the host this request came in on."""
+    cfg = settings()
+    if cfg.admin_url:
+        return cfg.admin_url
+    host = req.headers.get("x-forwarded-host") or req.headers.get("host") or "localhost:8766"
+    scheme = "http" if host.startswith(("localhost", "127.0.0.1")) else "https"
+    return f"{scheme}://{host}/"
+
 
 def route(event: dict, store: Store | None = None) -> dict:
     req = Request(event)

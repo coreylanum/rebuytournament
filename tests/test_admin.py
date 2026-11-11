@@ -125,3 +125,15 @@ def test_venmo_helpers():
     assert venmo_username("Aidan Anthony") is None
     assert venmo_pay_link("Corey-Lanum", 31, "Poker 2026-11-03") == \
         "https://venmo.com/Corey-Lanum?txn=pay&amount=31.00&note=Poker+2026-11-03"
+
+
+def test_public_base_url_prefers_custom_domain(env, monkeypatch):
+    req = admin.Request(event("GET", "/admin", headers={"host": "abc.lambda-url.us-east-1.on.aws"}))
+    assert admin.public_base_url(req) == "https://abc.lambda-url.us-east-1.on.aws/"
+    monkeypatch.setenv("ADMIN_URL", "https://poker.example.com")
+    admin.settings.cache_clear()
+    assert admin.public_base_url(req) == "https://poker.example.com/"
+    local = admin.Request(event("GET", "/admin", headers={"host": "localhost:8766"}))
+    monkeypatch.delenv("ADMIN_URL")
+    admin.settings.cache_clear()
+    assert admin.public_base_url(local) == "http://localhost:8766/"

@@ -70,7 +70,8 @@ One-time setup:
    `recap_provider` to `bedrock` in `infra/cdk.json` and enable Claude model access in the Bedrock console.)
 2. Pick the sender address for emails. It must be a member of the Google Group (or the group must allow
    external posting). SES starts in sandbox mode: request production access, or verify the group address too.
-3. Fill in `infra/cdk.json` context: `group_email`, `treasurer_email`, `from_email`, `region`.
+3. Fill in `infra/cdk.json` context: `group_email`, `treasurer_email`, `from_email`, `region`, and
+   optionally `site_domain` (see *Custom domain* below).
 
 Deploy:
 
@@ -106,6 +107,34 @@ Seed the 2026 history and publish the site (bucket names from the stack outputs 
 ```bash
 .venv/bin/python scripts/import_sheet.py data/private/2026-sheet.xlsx --bucket <DataBucketName> --site-bucket <site bucket> --distribution <distribution id> --publish
 ```
+
+### Custom domain
+
+Set `site_domain` in `infra/cdk.json` (a subdomain, e.g. `pokertournament.visualization.partners`). The website
+is served at `https://<site_domain>/` and the admin at `https://<site_domain>/admin`; emails link there too.
+The old `lambda-url` admin address keeps working.
+
+The first deploy with a domain creates a free AWS certificate and **waits** until you prove you own the
+domain. Add these records where the domain's DNS is hosted (for `visualization.partners` that's Route 53,
+hosted zone `Z07954442P236X23QGALT`, with Namecheap pointing at the AWS nameservers):
+
+1. **Certificate validation** CNAME: shown in the ACM console (us-east-1) under the certificate. A few minutes
+   after it exists the deploy carries on. Leave it in place: AWS uses it to renew the certificate.
+2. **The site**: in Route 53, A and AAAA *alias* records to the `CloudFrontDomain` stack output; at a DNS
+   provider without aliases, a CNAME to it.
+
+These records are made by hand, not by the stack.
+
+### After changing code
+
+`cdk deploy` uploads whatever is in `build/lambda`, so run both commands after any code change:
+
+```bash
+./scripts/package_lambda.sh && (cd infra && npx aws-cdk@2 deploy)
+```
+
+Changes to the website files (`src/pokerleague/web/`) appear on the next **Approve**, which rebuilds the site.
+Changes made in the admin (approvals, players, recaps) need no deploy.
 
 Expected cost: a few dollars a month (Lambda, S3, CloudFront), plus a few cents of Claude usage per recap.
 

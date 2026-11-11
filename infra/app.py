@@ -4,7 +4,8 @@
 Creates:
   - a private, versioned S3 bucket for league data (players, tournaments, raw logs)
   - a private S3 bucket + CloudFront distribution for the public website
-  - the admin Lambda (function URL) that handles uploads, review and approval
+  - the admin Lambda (function URL) that handles uploads, review and approval, also served
+    through CloudFront at /admin so the site and the admin share one domain
   - two generated secrets: the admin password and the session signing key
 
 Settings come from CDK context (cdk.json or `-c key=value`):
@@ -12,6 +13,8 @@ Settings come from CDK context (cdk.json or `-c key=value`):
   treasurer_email  who gets "ready to review" emails
   from_email       verified SES sender (must be allowed to post to the group)
   league_name      shown on the admin pages
+  site_domain      optional custom domain, e.g. poker.example.com. The deploy pauses until you add
+                   the certificate's validation CNAME at your DNS provider (see the README).
   recap_provider   "anthropic" (default, uses the AnthropicApiKey secret) or "bedrock"
   recap_model      model id (default claude-opus-5-5)
 """
@@ -20,6 +23,7 @@ from pathlib import Path
 
 import aws_cdk as cdk
 from aws_cdk import (
+    aws_certificatemanager as acm,
     aws_cloudfront as cloudfront,
     aws_cloudfront_origins as origins,
     aws_iam as iam,
@@ -28,6 +32,7 @@ from aws_cdk import (
     aws_s3 as s3,
     aws_secretsmanager as secretsmanager,
     aws_ses as ses,
+    aws_ssm as ssm,
 )
 from constructs import Construct
 
@@ -55,17 +60,6 @@ class PokerLeagueStack(cdk.Stack):
             enforce_ssl=True,
             removal_policy=cdk.RemovalPolicy.RETAIN,
         )
-        distribution = cloudfront.Distribution(
-            self, "Site",
-            default_behavior=cloudfront.BehaviorOptions(
-                origin=origins.S3BucketOrigin.with_origin_access_control(site_bucket),
-                viewer_protocol_policy=cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
-                response_headers_policy=cloudfront.ResponseHeadersPolicy.SECURITY_HEADERS,
-            ),
-            default_root_object="index.html",
-            price_class=cloudfront.PriceClass.PRICE_CLASS_100,
-        )
-
         password = secretsmanager.Secret(
             self, "AdminPassword",
             description="Poker league admin password (share with hosts and the treasurer)",
@@ -94,6 +88,10 @@ class PokerLeagueStack(cdk.Stack):
             # Sends a verification email to this address on first deploy.
             ses.EmailIdentity(self, "Sender", identity=ses.Identity.email(from_email))
 
+        site_domain = ctx("site_domain")
+        site_url = f"https://{site_domain}/" if site_domain else None
+        param_prefix = f"/{self.stack_name}/"
+
         fn = lambda_.Function(
             self, "Admin",
             runtime=lambda_.Runtime.PYTHON_3_12,
@@ -107,8 +105,11 @@ class PokerLeagueStack(cdk.Stack):
             environment={
                 "DATA_BUCKET": data_bucket.bucket_name,
                 "SITE_BUCKET": site_bucket.bucket_name,
-                "DISTRIBUTION_ID": distribution.distribution_id,
-                "SITE_URL": f"https://{distribution.distribution_domain_name}/",
+                # SSM parameters rather than direct references: the distribution points at this
+                # function (see below), so referencing the distribution here would be a cycle.
+                "DISTRIBUTION_ID_PARAM": f"{param_prefix}distribution-id",
+                "SITE_URL_PARAM": f"{param_prefix}site-url",
+                **({"SITE_URL": site_url, "ADMIN_URL": site_url} if site_url else {}),
                 "ADMIN_PASSWORD_SECRET_ARN": password.secret_arn,
                 "SIGNING_KEY_SECRET_ARN": signing_key.secret_arn,
                 "FROM_EMAIL": from_email,
@@ -124,7 +125,13 @@ class PokerLeagueStack(cdk.Stack):
         anthropic_key.grant_read(fn)
         data_bucket.grant_read_write(fn)
         site_bucket.grant_read_write(fn)
-        distribution.grant_create_invalidation(fn)
+        # ARNs built from names, not references, to keep CloudFormation free of a dependency cycle.
+        fn.add_to_role_policy(iam.PolicyStatement(
+            actions=["cloudfront:CreateInvalidation"],
+            resources=[self.format_arn(service="cloudfront", region="", resource="distribution", resource_name="*")]))
+        fn.add_to_role_policy(iam.PolicyStatement(
+            actions=["ssm:GetParameter"],
+            resources=[self.format_arn(service="ssm", resource="parameter", resource_name=f"{self.stack_name}/*")]))
         password.grant_read(fn)
         signing_key.grant_read(fn)
         fn.add_to_role_policy(iam.PolicyStatement(actions=["ses:SendEmail"], resources=["*"]))
@@ -134,8 +141,43 @@ class PokerLeagueStack(cdk.Stack):
 
         url = fn.add_function_url(auth_type=lambda_.FunctionUrlAuthType.NONE)
 
-        cdk.CfnOutput(self, "WebsiteUrl", value=f"https://{distribution.distribution_domain_name}/")
-        cdk.CfnOutput(self, "AdminUrl", value=f"{url.url}admin")
+        certificate = None
+        if site_domain:
+            # DNS validation without a Route 53 zone: CloudFormation waits until the CNAME shown in
+            # the ACM console (and in the deploy's stack events) exists at your DNS provider.
+            certificate = acm.Certificate(self, "SiteCertificate", domain_name=site_domain,
+                                          validation=acm.CertificateValidation.from_dns())
+        distribution = cloudfront.Distribution(
+            self, "Site",
+            default_behavior=cloudfront.BehaviorOptions(
+                origin=origins.S3BucketOrigin.with_origin_access_control(site_bucket),
+                viewer_protocol_policy=cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+                response_headers_policy=cloudfront.ResponseHeadersPolicy.SECURITY_HEADERS,
+            ),
+            additional_behaviors={
+                # The admin app, uncached, with cookies, query strings and form posts passed through.
+                "/admin*": cloudfront.BehaviorOptions(
+                    origin=origins.FunctionUrlOrigin(url),
+                    viewer_protocol_policy=cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+                    allowed_methods=cloudfront.AllowedMethods.ALLOW_ALL,
+                    cache_policy=cloudfront.CachePolicy.CACHING_DISABLED,
+                    origin_request_policy=cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
+                    response_headers_policy=cloudfront.ResponseHeadersPolicy.SECURITY_HEADERS,
+                ),
+            },
+            domain_names=[site_domain] if site_domain else None,
+            certificate=certificate,
+            default_root_object="index.html",
+            price_class=cloudfront.PriceClass.PRICE_CLASS_100,
+        )
+        site_address = site_url or f"https://{distribution.distribution_domain_name}/"
+        ssm.StringParameter(self, "DistributionId", parameter_name=f"{param_prefix}distribution-id",
+                            string_value=distribution.distribution_id)
+        ssm.StringParameter(self, "SiteUrl", parameter_name=f"{param_prefix}site-url", string_value=site_address)
+        cdk.CfnOutput(self, "WebsiteUrl", value=site_address)
+        cdk.CfnOutput(self, "AdminUrl", value=f"{site_address}admin")
+        cdk.CfnOutput(self, "CloudFrontDomain", value=distribution.distribution_domain_name,
+                      description="Point your domain's CNAME record here")
         cdk.CfnOutput(self, "AdminPasswordSecret", value=password.secret_name,
                       description="aws secretsmanager get-secret-value --secret-id <this> --query SecretString")
         cdk.CfnOutput(self, "AnthropicApiKeySecret", value=anthropic_key.secret_name,

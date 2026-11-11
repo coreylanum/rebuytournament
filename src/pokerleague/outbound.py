@@ -11,7 +11,7 @@ import time
 from email.message import EmailMessage
 from urllib.parse import quote, urlencode
 
-from .config import settings
+from .config import _ssm, settings
 from .site import build_site_files, content_type, write_local
 from .store import Store
 
@@ -59,9 +59,10 @@ def publish_site(store: Store) -> str:
     for path, data in files.items():
         cache = "no-cache" if path.startswith("data/") or path == "index.html" else "public, max-age=300"
         s3.put_object(Bucket=cfg.site_bucket, Key=path, Body=data, ContentType=content_type(path), CacheControl=cache)
-    if cfg.distribution_id:
+    distribution_id = cfg.distribution_id or _ssm(cfg.distribution_id_param)
+    if distribution_id:
         boto3.client("cloudfront").create_invalidation(
-            DistributionId=cfg.distribution_id,
+            DistributionId=distribution_id,
             InvalidationBatch={"Paths": {"Quantity": 1, "Items": ["/*"]}, "CallerReference": str(time.time())},
         )
     return f"published {len(files)} files"

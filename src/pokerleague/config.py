@@ -19,8 +19,9 @@ class Settings:
     site_bucket: str | None
     site_dir: str
     distribution_id: str | None
+    distribution_id_param: str | None
     site_url: str
-    admin_url: str
+    admin_url: str | None
     from_email: str | None
     group_email: str | None
     treasurer_email: str | None
@@ -28,6 +29,14 @@ class Settings:
     bedrock_region: str | None
     admin_password: str
     signing_key: str
+
+
+def _ssm(name: str | None) -> str | None:
+    if not name:
+        return None
+    import boto3
+
+    return boto3.client("ssm").get_parameter(Name=name)["Parameter"]["Value"]
 
 
 @lru_cache(maxsize=1)
@@ -50,8 +59,12 @@ def settings() -> Settings:
         site_bucket=env("SITE_BUCKET"),
         site_dir=env("SITE_DIR", "build/site"),
         distribution_id=env("DISTRIBUTION_ID"),
-        site_url=env("SITE_URL", "http://localhost:8765/").rstrip("/") + "/",
-        admin_url=env("ADMIN_URL", "http://localhost:8766/").rstrip("/") + "/",
+        # In AWS the distribution id sits in an SSM parameter: the distribution routes /admin to this
+        # Lambda, so the Lambda can't reference the distribution directly (CloudFormation cycle).
+        distribution_id_param=env("DISTRIBUTION_ID_PARAM"),
+        site_url=(env("SITE_URL") or _ssm(env("SITE_URL_PARAM")) or "http://localhost:8765/").rstrip("/") + "/",
+        # Public base URL of the admin (e.g. the custom domain); unset = derive from the request.
+        admin_url=(env("ADMIN_URL").rstrip("/") + "/") if env("ADMIN_URL") else None,
         from_email=env("FROM_EMAIL"),
         group_email=env("GROUP_EMAIL"),
         treasurer_email=env("TREASURER_EMAIL"),
