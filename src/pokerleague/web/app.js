@@ -1,4 +1,4 @@
-/* Hold'em League site: vanilla JS, no build step.
+/* Rebuy Club site: vanilla JS, no build step.
  * Data comes from data/league.json, data/season-<year>.json and data/t/<date>.json.
  * All names are inserted with textContent (never innerHTML).
  */
@@ -391,6 +391,8 @@
       { key: "first", label: "Winner", cls: "player", render: (t) => playerLink(t.first) },
       { key: "second", label: "2nd", render: (t) => playerLink(t.second) },
       { key: "third", label: "3rd", render: (t) => playerLink(t.third) },
+      { key: "fourth", label: "4th", render: (t) => playerLink(t.fourth) },
+      { key: "bubble", label: "Bubble", render: (t) => playerLink(t.bubble) },
       { key: "bounty", label: "Bounty", render: (t) => (t.bounty_winners.length ? t.bounty_winners.map(nameOf).join(", ") : "–") },
       { key: "detail", label: "", render: (t) => (t.has_logs ? h("span", { class: "badge" }, "hand history") : "") },
     ], list, { initial: { key: "date", dir: "descending" } });

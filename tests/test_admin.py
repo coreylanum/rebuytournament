@@ -137,3 +137,85 @@ def test_public_base_url_prefers_custom_domain(env, monkeypatch):
     monkeypatch.delenv("ADMIN_URL")
     admin.settings.cache_clear()
     assert admin.public_base_url(local) == "http://localhost:8766/"
+
+
+# ---------- Phase 2: weekly invite ----------
+
+from datetime import date as Date  # noqa: E402
+
+from pokerleague import invite  # noqa: E402
+
+FORM = {"content-type": "application/x-www-form-urlencoded"}
+
+
+def outbox(store):
+    return [store.get_bytes(k).decode() for k in store.list("outbox/")]
+
+
+def test_invite_content(env):
+    store, _ = env
+    invite.save_settings(store, {"club_url": "https://www.pokernow.com/clubs/rebuy", "treasurer_venmo": "@Pat-T",
+                                 "treasurer_paypal": "https://paypal.me/patt"})
+    subject, text = invite.build_invite(store, Date(2026, 11, 3))
+    assert "7:30 pm" in subject
+    assert "Tuesday, November 3, 7:30 pm Eastern" in text
+    assert "https://www.pokernow.com/clubs/rebuy" in text
+    assert "https://venmo.com/Pat-T?txn=pay&amount=10.00&note=Poker+11%2F3" in text
+    assert "https://paypal.me/patt/10.00" in text
+    assert "Knock out Suzanne B to collect $10." in text and "rolled over" not in text
+
+
+def test_invite_bounty_rollover(env):
+    store, _ = env
+    save_tournament(store, {"date": "2026-10-27", "season": 2026, "status": "approved", "source": "sheet",
+                            "results": [{"player": "suzanne-b", "place": 1}], "placings": {"first": "suzanne-b"},
+                            "bounty": {"winners": [], "carry_out": 10.0}})
+    _, text = invite.build_invite(store, Date(2026, 11, 3))
+    assert "collect $20. It rolled over" in text
+
+
+def test_scheduled_invite_rules(env):
+    store, _ = env
+    game = Date(2026, 11, 3)
+    assert invite.send_weekly_invite(store, game)["reason"] == "Invites are turned off."
+    with pytest.raises(ValueError):
+        invite.save_settings(store, {"invites_enabled": True})  # no club link yet
+    invite.save_settings(store, {"invites_enabled": True, "club_url": "https://www.pokernow.com/clubs/rebuy",
+                                 "skip_dates": ["2026-11-03"]})
+    assert "skip list" in invite.send_weekly_invite(store, game)["reason"]
+    invite.save_settings(store, {"skip_dates": []})
+    assert invite.send_weekly_invite(store, game)["sent"]
+    assert "Already sent" in invite.send_weekly_invite(store, game)["reason"]  # a retry doesn't send twice
+    assert len([m for m in outbox(store) if "poker tonight" in m]) == 1
+    assert invite.next_game_date(invite.load_settings(store), Date(2026, 11, 4)) == Date(2026, 11, 10)
+    assert invite.next_game_date(invite.load_settings(store), Date(2026, 11, 10)) == Date(2026, 11, 10)
+
+
+def test_settings_page_and_test_send(env):
+    store, _ = env
+    cookie = login(store)
+    body = ("invites_enabled=yes&club_url=https%3A%2F%2Fwww.pokernow.com%2Fclubs%2Frebuy&game_weekday=1&start_time=19%3A30"
+            "&treasurer_venmo=%40pat&treasurer_paypal=&skip_dates=2026-12-29%0D%0A2026-12-22&note=").encode()
+    r = admin.route(event("POST", "/admin/settings", body, FORM, cookie=cookie), store)
+    assert r["statusCode"] == 303
+    cfg = invite.load_settings(store)
+    assert cfg["invites_enabled"] and cfg["skip_dates"] == ["2026-12-22", "2026-12-29"]
+    page_html = admin.route(event("GET", "/admin/settings", cookie=cookie), store)["body"]
+    assert "Next invite" in page_html and "venmo.com/pat" in page_html
+    r = admin.route(event("POST", "/admin/invite/test", b"", FORM, cookie=cookie), store)
+    from urllib.parse import unquote
+    assert "test invite to treasurer@example.com" in unquote(r["headers"]["location"])
+    assert any("To: treasurer@example.com" in m and "poker tonight" in m for m in outbox(store))
+    assert not store.list("invites/")  # a test doesn't count as this week's invite
+
+
+def test_scheduled_event_goes_to_invite(env, monkeypatch):
+    store, _ = env
+    monkeypatch.setattr(admin, "store_from_env", lambda: store)
+    invite.save_settings(store, {"invites_enabled": True, "club_url": "https://www.pokernow.com/clubs/rebuy"})
+    monkeypatch.setattr(invite, "local_today", lambda: Date(2026, 11, 2))  # Monday
+    assert admin.handler({"task": "weekly_invite"})["reason"] == "Not game day."
+    monkeypatch.setattr(invite, "local_today", lambda: Date(2026, 11, 3))  # Tuesday
+    result = admin.handler({"task": "weekly_invite"})
+    assert result == {"sent": True, "date": "2026-11-03", "to": "group@example.com"}
+    assert admin.handler({"task": "weekly_invite"})["sent"] is False

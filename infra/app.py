@@ -17,6 +17,8 @@ Settings come from CDK context (cdk.json or `-c key=value`):
                    the certificate's validation CNAME at your DNS provider (see the README).
   recap_provider   "anthropic" (default, uses the AnthropicApiKey secret) or "bedrock"
   recap_model      model id (default claude-opus-5-5)
+  invite_schedule  when to check for the weekly invite (default every day at 10 am Eastern; it only sends on
+                   the game day set on the admin's Settings page)
 """
 
 from pathlib import Path
@@ -30,6 +32,7 @@ from aws_cdk import (
     aws_lambda as lambda_,
     aws_logs as logs,
     aws_s3 as s3,
+    aws_scheduler as scheduler,
     aws_secretsmanager as secretsmanager,
     aws_ses as ses,
     aws_ssm as ssm,
@@ -115,7 +118,7 @@ class PokerLeagueStack(cdk.Stack):
                 "FROM_EMAIL": from_email,
                 "GROUP_EMAIL": ctx("group_email"),
                 "TREASURER_EMAIL": ctx("treasurer_email"),
-                "LEAGUE_NAME": ctx("league_name", "Hold'em League"),
+                "LEAGUE_NAME": ctx("league_name", "Rebuy Club"),
                 "RECAP_PROVIDER": recap_provider,
                 "RECAP_MODEL": ctx("recap_model", "claude-opus-5-5" if recap_provider == "anthropic" else "anthropic.claude-opus-5-5"),
                 "ANTHROPIC_API_KEY_SECRET_ARN": anthropic_key.secret_arn,
@@ -140,6 +143,20 @@ class PokerLeagueStack(cdk.Stack):
             fn.add_to_role_policy(iam.PolicyStatement(actions=["bedrock-mantle:CreateInference"], resources=["*"]))
 
         url = fn.add_function_url(auth_type=lambda_.FunctionUrlAuthType.NONE)
+
+        # Weekly invite: EventBridge Scheduler (it understands time zones) calls the same function.
+        scheduler_role = iam.Role(self, "InviteSchedulerRole", assumed_by=iam.ServicePrincipal("scheduler.amazonaws.com"))
+        fn.grant_invoke(scheduler_role)
+        scheduler.CfnSchedule(
+            self, "WeeklyInvite",
+            description="Sends the weekly invite email on game day",
+            schedule_expression=ctx("invite_schedule", "cron(0 10 * * ? *)"),
+            schedule_expression_timezone="America/New_York",
+            flexible_time_window=scheduler.CfnSchedule.FlexibleTimeWindowProperty(mode="OFF"),
+            target=scheduler.CfnSchedule.TargetProperty(
+                arn=fn.function_arn, role_arn=scheduler_role.role_arn, input='{"task": "weekly_invite"}',
+                retry_policy=scheduler.CfnSchedule.RetryPolicyProperty(maximum_retry_attempts=2)),
+        )
 
         certificate = None
         if site_domain:

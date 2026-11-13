@@ -24,7 +24,7 @@ from email.parser import BytesParser
 from email.policy import default as default_policy
 from urllib.parse import parse_qs, quote
 
-from .. import league
+from .. import invite, league
 from ..config import settings
 from ..outbound import paypal_link, publish_site, send_email, venmo_pay_link, venmo_username
 from ..players import Player, slugify
@@ -151,7 +151,7 @@ def page(title: str, body: str, req: Request | None = None) -> dict:
     msg = req.query.get("msg") if req else None
     nav = ""
     if req and logged_in(req):
-        nav = (f'<a href="/admin">Tournaments</a><a href="/admin/players">Players</a>'
+        nav = (f'<a href="/admin">Tournaments</a><a href="/admin/players">Players</a><a href="/admin/settings">Settings</a>'
                f'<a href="{e(cfg.site_url)}">Website</a>'
                '<form class="inline" method="post" action="/admin/logout"><button>Log out</button></form>')
     return response(f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -333,6 +333,66 @@ def view_player(store: Store, req: Request, player_id: str) -> dict:
 <button class="primary">Save</button></form></div>""", req)
 
 
+def view_settings(store: Store, req: Request) -> dict:
+    cfg = invite.load_settings(store)
+    game = invite.next_game_date(cfg)
+    status = invite.invite_status(store, game, cfg)
+    subject, text = invite.build_invite(store, game, cfg)
+    days = "".join(f'<option value="{i}"{" selected" if int(cfg["game_weekday"]) == i else ""}>{d}</option>'
+                   for i, d in enumerate(invite.WEEKDAYS))
+    checked = " checked" if cfg["invites_enabled"] else ""
+    group = settings().group_email or "(not configured)"
+    return page("Settings", f"""<h1>Settings</h1>
+<div class="card"><h2>Weekly invite</h2>
+<p class="muted">Sent to {e(group)} on game day at 10 am Eastern. PokerNow's weekly club tournament
+handles registration and the start; the invite links to the club.</p>
+<form method="post" action="/admin/settings" class="row">
+<label style="flex:1 1 100%;flex-direction:row;align-items:center;gap:8px"><input type="checkbox" name="invites_enabled" value="yes"{checked}> Send the weekly invite</label>
+<label>PokerNow club link<input type="url" name="club_url" value="{e(cfg["club_url"])}" placeholder="https://www.pokernow.com/clubs/..." size="40"></label>
+<label>Game day<select name="game_weekday">{days}</select></label>
+<label>Start time (Eastern)<input type="text" name="start_time" value="{e(cfg["start_time"])}" pattern="[0-2]?[0-9]:[0-5][0-9]" size="6"></label>
+<label>Treasurer's Venmo username<input type="text" name="treasurer_venmo" value="{e(cfg["treasurer_venmo"])}" placeholder="@name"></label>
+<label>Treasurer's PayPal (paypal.me link)<input type="text" name="treasurer_paypal" value="{e(cfg["treasurer_paypal"])}"></label>
+<label>Skip these dates (one per line, e.g. holidays)<textarea name="skip_dates" style="min-height:80px;width:220px">{e(chr(10).join(cfg["skip_dates"]))}</textarea></label>
+<label style="flex:1 1 100%">Extra note for every invite (optional)<textarea name="note" style="min-height:60px">{e(cfg["note"])}</textarea></label>
+<button class="primary">Save</button></form></div>
+<div class="card"><h2>Next invite: {e(game.isoformat())}</h2><p>{e(status)}</p>
+<p><strong>{e(subject)}</strong></p><div class="recap">{e(text)}</div><br>
+<form class="inline" method="post" action="/admin/invite/test"><button>Send a test to the treasurer</button></form>
+<form class="inline" method="post" action="/admin/invite/send"><button>Send to the group now</button></form></div>""", req)
+
+
+def save_settings_form(store: Store, req: Request) -> dict:
+    start = req.form("start_time").strip()
+    hour, _, minute = start.partition(":")
+    if not (hour.isdigit() and minute.isdigit() and int(hour) < 24 and int(minute) < 60):
+        raise ValueError("start time should look like 19:30")
+    skips = sorted({Date.fromisoformat(x.strip()).isoformat() for x in req.form("skip_dates").splitlines() if x.strip()})
+    invite.save_settings(store, {
+        "invites_enabled": req.form("invites_enabled") == "yes",
+        "club_url": req.form("club_url").strip(),
+        "game_weekday": int(req.form("game_weekday", "1")),
+        "start_time": f"{int(hour):02d}:{int(minute):02d}",
+        "treasurer_venmo": req.form("treasurer_venmo").strip(),
+        "treasurer_paypal": req.form("treasurer_paypal").strip(),
+        "skip_dates": skips,
+        "note": req.form("note"),
+    })
+    return flash_redirect("/admin/settings", "Saved.")
+
+
+def send_invite_now(store: Store, test: bool) -> dict:
+    if test:
+        to = settings().treasurer_email
+        if not to:
+            raise ValueError("no treasurer email is configured")
+        invite.send_weekly_invite(store, to=to)
+        return flash_redirect("/admin/settings", f"Sent a test invite to {to}.")
+    result = invite.send_weekly_invite(store, force=True)
+    msg = f"Sent the invite to {result['to']}." if result["sent"] else f"Not sent. {result['reason']}"
+    return flash_redirect("/admin/settings", msg)
+
+
 # ---------- actions ----------
 
 def write_recap(store: Store, record: dict) -> dict:
@@ -459,6 +519,10 @@ def route(event: dict, store: Store | None = None) -> dict:
             return handle_post(store, req, date, parts[3])
     if path == "/admin/players":
         return view_players(store, req)
+    if path == "/admin/settings":
+        return save_settings_form(store, req) if method == "POST" else view_settings(store, req)
+    if path in ("/admin/invite/test", "/admin/invite/send") and method == "POST":
+        return send_invite_now(store, test=path.endswith("test"))
     if parts[:2] == ["admin", "players"] and len(parts) == 3:
         player_id = slugify(parts[2])
         return save_player(store, req, player_id) if method == "POST" else view_player(store, req, player_id)
@@ -466,6 +530,10 @@ def route(event: dict, store: Store | None = None) -> dict:
 
 
 def handler(event: dict, context=None) -> dict:
+    if event.get("task") == "weekly_invite":  # from the EventBridge schedule, not a web request
+        result = invite.send_weekly_invite(store_from_env(), scheduled=True)
+        print(f"weekly invite: {result}")
+        return result
     try:
         return route(event)
     except ValueError as exc:

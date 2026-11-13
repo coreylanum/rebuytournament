@@ -68,7 +68,7 @@ def settings() -> Settings:
         from_email=env("FROM_EMAIL"),
         group_email=env("GROUP_EMAIL"),
         treasurer_email=env("TREASURER_EMAIL"),
-        league_name=env("LEAGUE_NAME", "Hold'em League"),
+        league_name=env("LEAGUE_NAME", "Rebuy Club"),
         bedrock_region=env("BEDROCK_REGION") or env("AWS_REGION"),
         admin_password=password,
         signing_key=key,

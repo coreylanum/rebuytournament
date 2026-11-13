@@ -1,11 +1,14 @@
-# Hold'em League automation
+# Rebuy Club automation
 
 Automates the weekly PokerNow tournament: results, payouts, standings, a
 website and the recap email. Phase 1 of the 2027 plan.
 
 ## What happens each week
 
-1. **Host** plays the tournament on PokerNow as usual (created from the shared group account).
+0. **PokerNow** creates the week's tournament by itself (a weekly repeating tournament in the group's
+   PokerNow Club), lets club members register and starts it on schedule. At 10 am Eastern on game day the
+   system emails the group the club link, the Venmo/PayPal link to pay the treasurer, and the bounty target.
+1. **Host** plays the tournament on PokerNow as usual.
 2. After the game, the host downloads each table's log (Log / Ledger → *Download full log*)
    and uploads the CSVs on the admin page. The system works out:
    - the finishing order, bubble and first out, from the knockouts in the logs
@@ -138,8 +141,29 @@ Changes made in the admin (approvals, players, recaps) need no deploy.
 
 Expected cost: a few dollars a month (Lambda, S3, CloudFront), plus a few cents of Claude usage per recap.
 
-## Not in Phase 1 yet
+## Weekly tournament and invite (Phase 2)
 
-- Creating the PokerNow tournament and sending the invite (Phase 2)
-- Fetching logs automatically: PokerNow's CSV download needs a captcha, so the host uploads them
+PokerNow's terms forbid bots driving the site, so nothing here logs in to PokerNow. Instead PokerNow's own
+Club tournaments do the work. One-time setup on the shared group account:
+
+1. Get PokerNow PLUS (clubs are created by PLUS members; joining one is free) and create the club.
+2. Club **Settings → Enable Tournaments**.
+3. **+ Tournament → Copy from a tournament URL** with a past tournament's link, so the blinds and stack carry over.
+   Then set: type **Scheduled**, game day at 7:30 pm, **Repeats: Weekly** on that day, buy-in **0** (money is
+   handled outside PokerNow), late registration and re-entry as the group plays today, and
+   **Promote on the Club Page** so the next game shows at the top of the club page.
+4. Send everyone the club link once so they can join.
+5. In the admin, **Settings**: paste the club link, check the start time, fill in the treasurer's Venmo
+   (and PayPal.me if used), press **Send a test to the treasurer**, then tick **Send the weekly invite**.
+
+The schedule runs every morning at 10 am Eastern and sends only on the game day set in Settings, once per
+week. Add holidays to the skip list. **Send to the group now** sends this week's invite immediately.
+
+Check after the first club game that each table's log can still be downloaded (Log / Ledger → Download full
+log); the club archive also keeps hand histories.
+
+## Not automated yet
+
+- Fetching logs automatically: PokerNow's CSV download needs a captcha and its terms forbid bots, so the host
+  uploads them. Automating this would need PokerNow's written permission.
 - Matching Venmo/PayPal payment emails automatically (Phase 3); for now the treasurer ticks who paid

@@ -68,6 +68,8 @@ def build_site_files(store: Store) -> dict[str, bytes]:
             "first": t.get("placings", {}).get("first"),
             "second": t.get("placings", {}).get("second"),
             "third": t.get("placings", {}).get("third"),
+            "fourth": t.get("placings", {}).get("fourth"),
+            "bubble": t.get("placings", {}).get("bubble"),
             "bounty_winners": t.get("bounty", {}).get("winners", []),
             "has_logs": t.get("source") == "logs",
             "host": t.get("host"),
